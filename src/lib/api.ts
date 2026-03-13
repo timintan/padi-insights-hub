@@ -1,9 +1,21 @@
 const API_URL = "https://script.google.com/macros/s/AKfycbz5mA_cLvAEiCV2zile4fio9EkCa4nZy9aahc0wO4xAeJw5UqJGj1ctKC9ouVhBcHgkZQ/exec";
 const API_URL_MAP = "https://script.google.com/macros/s/AKfycbw1yAeI0KFwBQIjJEa8Ft0V9CAghFfN1p5jO9oH_0wn0RLn4kaEQdMjChHdcox9-LAN/exec";
+const API_URL_HASIL = "https://script.google.com/macros/s/AKfycbx7Ixf5o_k27WexiCN-8B2rGurGPxUWBkw8ro2VsGEXOHPSNONKobyWtNmN_nv3o6D6KQ/exec";
+const API_URL_PETANI = "https://script.google.com/macros/s/AKfycbyFbft8MN_uIlwPeL2K_N_HJw-ijDcoWyvYd3tkmo7ojUhiCi2YdAtA_QIxmqgfh-c1/exec";
 
 export interface SheetData {
   header: string[];
   data: (string | number | null)[][];
+}
+
+export interface PetaniRow {
+  kode_subsegmen?: string;
+  "Nama Kepala Keluarga"?: string;
+  "NIK Kepala Keluarga"?: string;
+  Alamat?: string;
+  "Nama Pengelola UTP"?: string;
+  "NIK Nama Pengelola UTP"?: string;
+  "No HP"?: string;
 }
 
 export async function fetchSheetList(): Promise<string[]> {
@@ -28,6 +40,38 @@ export async function fetchMapData(sheet: string): Promise<SheetData> {
   if (result.header && result.data) return result;
   if (result.data?.header) return result.data;
   throw new Error("Format data tidak dikenali.");
+}
+
+export async function fetchUbinanData(sheet: string): Promise<SheetData> {
+  const response = await fetch(`${API_URL_HASIL}?action=data&sheet=${encodeURIComponent(sheet)}`);
+  if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+  const result = await response.json();
+  if (!result.data || result.data.length === 0) throw new Error("Data tidak ditemukan di Sheet atau sheet kosong");
+  return result;
+}
+
+export async function fetchDatabasePetani(): Promise<PetaniRow[]> {
+  const response = await fetch(API_URL_PETANI);
+  const data = await response.json();
+  return data;
+}
+
+export function formatNIK(nik: string | number | null | undefined): string {
+  if (!nik) return "";
+  const strNik = String(nik).trim();
+  if (strNik.length < 6) return strNik;
+  return strNik.slice(0, -6) + "******";
+}
+
+export function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
 }
 
 export const warningText: Record<string, string> = {
