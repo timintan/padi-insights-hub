@@ -3,7 +3,7 @@ import { Loader2 } from "lucide-react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import PageHeader from "@/components/PageHeader";
-import { fetchMapData, colLetterToIndex, type SheetData } from "@/lib/api";
+import { fetchMapData, colLetterToIndex, haversineDistance, type SheetData } from "@/lib/api";
 
 // Fix leaflet default icon
 import icon from "leaflet/dist/images/marker-icon.png";
@@ -11,26 +11,28 @@ import iconShadow from "leaflet/dist/images/marker-shadow.png";
 const DefaultIcon = L.icon({ iconUrl: icon, shadowUrl: iconShadow, iconSize: [25, 41], iconAnchor: [12, 41] });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-function makeIcon(color: string) {
-  return L.divIcon({
-    className: "",
-    html: `<div style="width:12px;height:12px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3)"></div>`,
-    iconSize: [12, 12],
-    iconAnchor: [6, 6],
-  });
+function makeCircleMarker(map: L.Map, lat: number, lng: number, color: string, popupHTML: string, markersArr: L.CircleMarker[]) {
+  const marker = L.circleMarker([lat, lng], {
+    color,
+    fillColor: color,
+    fillOpacity: 0.85,
+    radius: 5,
+  }).addTo(map);
+  marker.bindPopup(`<div style="font-size:12px;font-family:Inter,sans-serif">${popupHTML}</div>`);
+  markersArr.push(marker);
 }
 
 const LEGEND = [
   { color: "#3B82F6", label: "Utama (Alokasi)" },
   { color: "#1E293B", label: "Cadangan (Alokasi)" },
-  { color: "#22C55E", label: "Alokasi (Realisasi)" },
+  { color: "#F59E0B", label: "Alokasi (Realisasi)" },
   { color: "#EF4444", label: "Tambahan (Realisasi)" },
 ];
 
 export default function PetaPage() {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
-  const markersRef = useRef<L.Marker[]>([]);
+  const markersRef = useRef<L.CircleMarker[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataAlokasi, setDataAlokasi] = useState<SheetData | null>(null);
   const [dataRealisasi, setDataRealisasi] = useState<SheetData | null>(null);
@@ -51,7 +53,6 @@ export default function PetaPage() {
     layersRef.current = { streets, satellite };
     mapInstance.current = map;
 
-    // Load data
     Promise.all([fetchMapData("Alokasi"), fetchMapData("Realisasi")])
       .then(([alokasi, realisasi]) => {
         setDataAlokasi(alokasi);
@@ -77,7 +78,6 @@ export default function PetaPage() {
     }
   }, [mapType]);
 
-  // Filter options
   const filterOptions = useCallback((data: SheetData | null, colName: string) => {
     if (!data) return [];
     const idx = data.header.findIndex((h) => h.toLowerCase() === colName.toLowerCase());
@@ -97,13 +97,11 @@ export default function PetaPage() {
     const map = mapInstance.current;
     if (!map || !dataAlokasi || !dataRealisasi) return;
 
-    // Clear
     markersRef.current.forEach((m) => map.removeLayer(m));
     markersRef.current = [];
 
     const colIdx = (header: string[], name: string) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
 
-    // Helper filter
     const passes = (row: (string | number | null)[], header: string[]) => {
       const kabIdx = colIdx(header, "kab");
       const srIdx = colIdx(header, "subround");
@@ -116,33 +114,11 @@ export default function PetaPage() {
       return true;
     };
 
-    // Alokasi markers
+    // Build alokasi lookup (AA -> coords)
     const xIdx = colIdx(dataAlokasi.header, "x");
     const yIdx = colIdx(dataAlokasi.header, "y");
-    dataAlokasi.data.forEach((row) => {
-      if (!passes(row, dataAlokasi.header)) return;
-      const lng = parseFloat(String(row[xIdx]));
-      const lat = parseFloat(String(row[yIdx]));
-      if (isNaN(lat) || isNaN(lng)) return;
-      const bVal = row[1];
-      const color = bVal === "U" ? "#3B82F6" : "#1E293B";
-      const cols = ["H", "I", "J", "M", "AA"].map(colLetterToIndex);
-      const info = cols.map((i) => row[i]).filter(Boolean).join("<br>");
-      const marker = L.marker([lat, lng], { icon: makeIcon(color) }).addTo(map);
-      marker.bindPopup(`<div style="font-size:12px;font-family:Inter,sans-serif">${info}<hr style="margin:6px 0"><b>Koordinat:</b> ${lat.toFixed(6)}, ${lng.toFixed(6)}</div>`);
-      markersRef.current.push(marker);
-    });
-
-    // Realisasi markers
-    const aqIdx = colIdx(dataRealisasi.header, "aq") !== -1 ? colIdx(dataRealisasi.header, "aq") : 42;
-    const arIdx = colIdx(dataRealisasi.header, "ar") !== -1 ? colIdx(dataRealisasi.header, "ar") : 43;
-    let fkIdx = colIdx(dataRealisasi.header, "fk");
-    if (fkIdx === -1) fkIdx = colIdx(dataRealisasi.header, "realisasi");
-    if (fkIdx === -1) fkIdx = colLetterToIndex("FK");
-
-    // Build alokasi lookup
-    const alokasiMap: Record<string, { lat: number; lng: number }> = {};
     const aaIdx = colLetterToIndex("AA");
+    const alokasiMap: Record<string, { lat: number; lng: number }> = {};
     dataAlokasi.data.forEach((row) => {
       const aa = row[aaIdx];
       if (aa && xIdx !== -1 && yIdx !== -1) {
@@ -152,30 +128,60 @@ export default function PetaPage() {
       }
     });
 
+    // Alokasi markers
+    dataAlokasi.data.forEach((row) => {
+      if (!passes(row, dataAlokasi.header)) return;
+      const lng = parseFloat(String(row[xIdx]));
+      const lat = parseFloat(String(row[yIdx]));
+      if (isNaN(lat) || isNaN(lng)) return;
+      const bVal = row[1];
+      const color = bVal === "U" ? "#3B82F6" : "#1E293B";
+      const cols = ["H", "I", "J", "M", "AA"].map(colLetterToIndex);
+      const info = cols.map((i) => row[i]).filter(Boolean).join("<br>");
+      const popupHTML = `${info}<hr style="margin:6px 0"><b>Koordinat:</b> ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      makeCircleMarker(map, lat, lng, color, popupHTML, markersRef.current);
+    });
+
+    // Realisasi markers
+    const aqIdx = colIdx(dataRealisasi.header, "aq") !== -1 ? colIdx(dataRealisasi.header, "aq") : 42;
+    const arIdx = colIdx(dataRealisasi.header, "ar") !== -1 ? colIdx(dataRealisasi.header, "ar") : 43;
+    let fkIdx = colIdx(dataRealisasi.header, "fk");
+    if (fkIdx === -1) fkIdx = colIdx(dataRealisasi.header, "realisasi");
+    if (fkIdx === -1) fkIdx = colLetterToIndex("FK");
+
+    const ffIdx = colIdx(dataRealisasi.header, "ff") !== -1 ? colIdx(dataRealisasi.header, "ff") : colLetterToIndex("FF");
+    const fgIdx = colIdx(dataRealisasi.header, "fg") !== -1 ? colIdx(dataRealisasi.header, "fg") : colLetterToIndex("FG");
+    const fhIdx = colIdx(dataRealisasi.header, "fh") !== -1 ? colIdx(dataRealisasi.header, "fh") : colLetterToIndex("FH");
+    const fjIdx = colIdx(dataRealisasi.header, "fj") !== -1 ? colIdx(dataRealisasi.header, "fj") : colLetterToIndex("FJ");
+
     dataRealisasi.data.forEach((row) => {
       if (!passes(row, dataRealisasi.header)) return;
       const lng = parseFloat(String(row[aqIdx]));
       const lat = parseFloat(String(row[arIdx]));
       if (isNaN(lat) || isNaN(lng)) return;
 
-      const fkVal = row[fkIdx];
-      const color = fkVal === "1" || fkVal === 1 ? "#22C55E" : "#EF4444";
+      // Color based on FK value
+      const fk = String(row[fkIdx] || "").toLowerCase().trim();
+      let markerColor: string;
+      if (fk === "alokasi") markerColor = "#F59E0B"; // yellow
+      else if (fk === "tambahan") markerColor = "#EF4444"; // red
+      else markerColor = "#9CA3AF"; // gray
 
-      const ffIdx = colIdx(dataRealisasi.header, "ff") !== -1 ? colIdx(dataRealisasi.header, "ff") : colLetterToIndex("FF");
-      const fgIdx = colIdx(dataRealisasi.header, "fg") !== -1 ? colIdx(dataRealisasi.header, "fg") : colLetterToIndex("FG");
-      const fhIdx = colIdx(dataRealisasi.header, "fh") !== -1 ? colIdx(dataRealisasi.header, "fh") : colLetterToIndex("FH");
-      const fjIdx = colIdx(dataRealisasi.header, "fj") !== -1 ? colIdx(dataRealisasi.header, "fj") : colLetterToIndex("FJ");
+      const kab = row[ffIdx] || "";
+      const kec = row[fgIdx] || "";
+      const bulan = row[fhIdx] || "";
+      const subsegmenId = row[fjIdx] || "";
 
-      const info = [
-        row[ffIdx] ? `Kab: ${row[ffIdx]}` : "",
-        row[fgIdx] ? `Kec: ${row[fgIdx]}` : "",
-        row[fhIdx] ? `Bulan: ${row[fhIdx]}` : "",
-        row[fjIdx] ? `Subsegmen: ${row[fjIdx]}` : "",
-      ].filter(Boolean).join("<br>");
+      // Haversine distance to Alokasi
+      let distanceText = "";
+      const alokasiCoord = alokasiMap[String(subsegmenId)];
+      if (alokasiCoord) {
+        const dist = haversineDistance(lat, lng, alokasiCoord.lat, alokasiCoord.lng);
+        distanceText = `<br><br><b>Jarak ke titik Alokasi (subsegmen ${subsegmenId}):</b> ${dist.toFixed(2)} meter`;
+      }
 
-      const marker = L.marker([lat, lng], { icon: makeIcon(color) }).addTo(map);
-      marker.bindPopup(`<div style="font-size:12px;font-family:Inter,sans-serif">${info}<hr style="margin:6px 0"><b>Koordinat:</b> ${lat.toFixed(6)}, ${lng.toFixed(6)}</div>`);
-      markersRef.current.push(marker);
+      const popupHTML = `${kab}<br>${kec}<br>${bulan}<br>${subsegmenId}${distanceText}<hr style="margin:6px 0"><b>Koordinat:</b> ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+      makeCircleMarker(map, lat, lng, markerColor, popupHTML, markersRef.current);
     });
   }, [dataAlokasi, dataRealisasi, filterKab, filterSubround, filterSubsegmen, filterBulan]);
 
@@ -192,7 +198,6 @@ export default function PetaPage() {
   return (
     <div className="animate-fade-in">
       <PageHeader title="Peta" description="Halaman untuk menampilkan peta interaktif." />
-
       <div className="bg-card border border-border rounded-lg p-5 space-y-4">
         <div className="flex flex-wrap items-end gap-4">
           <SelectFilter label="Kabupaten" value={filterKab} onChange={setFilterKab} options={kabOptions} />
@@ -217,7 +222,6 @@ export default function PetaPage() {
           <div ref={mapRef} className="h-[500px] w-full rounded-lg border border-border" />
         </div>
 
-        {/* Legend */}
         <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">Legend:</span>
           {LEGEND.map((l) => (
