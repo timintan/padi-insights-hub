@@ -1,13 +1,26 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import DashboardLayout from "@/components/DashboardLayout";
+import AnomaliPage from "@/pages/AnomaliPage";
+import GrafikPage from "@/pages/GrafikPage";
+import PetaPage from "@/pages/PetaPage";
+import HasilUbinanPage from "@/pages/HasilUbinanPage";
+import DatabasePetaniPage from "@/pages/DatabasePetaniPage";
+import PetunjukTeknisPage from "@/pages/PetunjukTeknisPage";
 
 const Index = () => {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
+    <DashboardLayout>
+      {(section) => {
+        switch (section) {
+          case "anomali": return <AnomaliPage />;
+          case "grafik": return <GrafikPage />;
+          case "peta": return <PetaPage />;
+          case "hasil-ubinan": return <HasilUbinanPage />;
+          case "database-petani": return <DatabasePetaniPage />;
+          case "petunjuk-teknis": return <PetunjukTeknisPage />;
+          default: return <AnomaliPage />;
+        }
+      }}
+    </DashboardLayout>
   );
 };
 
